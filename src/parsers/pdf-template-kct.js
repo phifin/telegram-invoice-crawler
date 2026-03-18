@@ -127,7 +127,7 @@ function parseItemsKct(lines) {
     });
   }
 
-  logger.info(`[KCT] parseItemsKct: found ${items.length} items`);
+  logger.debug(`[KCT] parseItemsKct: found ${items.length} items`);
   return items;
 }
 
@@ -198,7 +198,7 @@ function parseSummaryKct(lines, rawText, invoice) {
     extract(rawText, /Tổng số tiền viết bằng chữ:\s*([^\n]+)/i) ||
     extract(rawText, /Tổng số tiền viết bằng chữ\s*:\s*([^\n]+)/i);
 
-  logger.info("[KCT] parseSummaryKct:", {
+  logger.debug("[KCT] parseSummaryKct:", {
     thttltsuat: invoice.thttltsuat,
     tgtcthue: invoice.tgtcthue,
     tgtthue: invoice.tgtthue,

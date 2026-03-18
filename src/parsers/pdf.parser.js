@@ -10,31 +10,27 @@ const { isTemplateVatRates, parseItemsVatRates, parseSummaryVatRates } = require
 const { isTemplateKct, parseItemsKct, parseSummaryKct } = require("./pdf-template-kct");
 const { parseItemsGeneric, parseSummaryGeneric } = require("./pdf-template-generic");
 
-const DEBUG_PDF = true;
-
 async function parsePdfInvoice(buffer) {
   const pdfData = await pdfParse(buffer);
   const rawText = normalizePdfExtract(pdfData.text);
   const lines = splitLines(pdfData.text);
 
-  logger.info("PDF text extracted length:", rawText.length);
-  logger.info("PDF lines extracted:", lines.length);
+  logger.debug("PDF text extracted length:", rawText.length);
+  logger.debug("PDF lines extracted:", lines.length);
 
-  if (DEBUG_PDF) {
-    logger.info("========== PDF RAW OUTPUT ==========");
-    logger.info("Meta:", {
-      numpages: pdfData.numpages,
-      numrender: pdfData.numrender,
-      info: pdfData.info,
-      metadata: pdfData.metadata,
-      version: pdfData.version,
-    });
-    logger.info("---------- RAW TEXT ----------");
-    logger.info("\n" + rawText);
-    logger.info("---------- LINES ----------");
-    lines.forEach((line, idx) => logger.info(`[${idx}] ${line}`));
-    logger.info("========== END DEBUG ==========");
-  }
+  logger.debug("========== PDF RAW OUTPUT ==========");
+  logger.debug("Meta:", {
+    numpages: pdfData.numpages,
+    numrender: pdfData.numrender,
+    info: pdfData.info,
+    metadata: pdfData.metadata,
+    version: pdfData.version,
+  });
+  logger.debug("---------- RAW TEXT ----------");
+  logger.debug("\n" + rawText);
+  logger.debug("---------- LINES ----------");
+  lines.forEach((line, idx) => logger.debug(`[${idx}] ${line}`));
+  logger.debug("========== END DEBUG ==========");
 
   const invoice = emptyInvoiceShape();
 
@@ -48,7 +44,7 @@ async function parsePdfInvoice(buffer) {
   const useVatRates = !useKct && isTemplateVatRates(rawText, lines);
   const templateName = useKct ? "KCT" : useVatRates ? "VAT_RATES" : "GENERIC";
 
-  if (DEBUG_PDF) logger.info(`[TEMPLATE] Detected: ${templateName}`);
+  logger.debug(`[TEMPLATE] Detected: ${templateName}`);
 
   // 3. Template-specific dispatch
   if (useKct) {
@@ -62,7 +58,7 @@ async function parsePdfInvoice(buffer) {
     parseSummaryGeneric(lines, rawText, invoice);
   }
 
-  logger.info("PDF parser intermediate:", {
+  logger.debug("PDF parser intermediate:", {
     template: templateName,
     khhdon: invoice.khhdon,
     shdon: invoice.shdon,

@@ -15,7 +15,7 @@ async function uploadInvoice(fileName, baseBinary, parsedData) {
   // Backend expects a flat document: fileName + pdfBinary + all invoice fields at root level
   const payload = { fileName, pdfBinary: baseBinary, ...parsedData };
 
-  logger.info("Posting to TARGET_API:", config.TARGET_API);
+  logger.debug("Posting to TARGET_API:", config.TARGET_API);
 
   const resp = await axios.post(config.TARGET_API, payload, {
     headers: { "Content-Type": "application/json" },

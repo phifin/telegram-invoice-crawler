@@ -80,7 +80,7 @@ function parseItemsVatRates(lines) {
     });
   }
 
-  logger.info(`[VAT_RATES] parseItemsVatRates: found ${items.length} items`);
+  logger.debug(`[VAT_RATES] parseItemsVatRates: found ${items.length} items`);
   return items;
 }
 
@@ -163,7 +163,7 @@ function parseSummaryVatRates(lines, rawText, invoice) {
     extract(rawText, /Tổng số tiền viết bằng chữ:\s*([^\n]+)/i) ||
     extract(rawText, /Tổng số tiền viết bằng chữ\s*:\s*([^\n]+)/i);
 
-  logger.info("[VAT_RATES] parseSummaryVatRates:", {
+  logger.debug("[VAT_RATES] parseSummaryVatRates:", {
     thttltsuat: invoice.thttltsuat,
     tgtcthue: invoice.tgtcthue,
     tgtthue: invoice.tgtthue,

@@ -5,6 +5,11 @@ function prefix() {
 }
 
 module.exports = {
+  debug(...args) {
+    if (process.env.DEBUG_LOGS === "true") {
+      console.log(prefix(), "[DEBUG]", ...args);
+    }
+  },
   info(...args) {
     console.log(prefix(), "[INFO]", ...args);
   },

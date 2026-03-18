@@ -83,7 +83,7 @@ function parseItemsGeneric(lines) {
     });
   }
 
-  logger.info(`[GENERIC] parseItemsGeneric: found ${items.length} items`);
+  logger.debug(`[GENERIC] parseItemsGeneric: found ${items.length} items`);
   return items;
 }
 
@@ -153,7 +153,7 @@ function parseSummaryGeneric(lines, rawText, invoice) {
     extract(rawText, /Tổng số tiền viết bằng chữ:\s*([^\n]+)/i) ||
     extract(rawText, /Tổng số tiền viết bằng chữ\s*:\s*([^\n]+)/i);
 
-  logger.info("[GENERIC] parseSummaryGeneric:", {
+  logger.debug("[GENERIC] parseSummaryGeneric:", {
     thttltsuat: invoice.thttltsuat,
     tgtcthue: invoice.tgtcthue,
     tgtthue: invoice.tgtthue,

@@ -43,7 +43,7 @@ async function getTelegramFilePath(fileId) {
     timeout: 30000,
   });
 
-  logger.info("getFile response:", resp.data);
+  logger.debug("getFile response:", resp.data);
 
   if (!resp.data?.ok || !resp.data?.result?.file_path) {
     throw new Error("getFile failed: missing file_path in response");
@@ -59,7 +59,7 @@ async function getTelegramFilePath(fileId) {
  */
 async function downloadTelegramFile(filePath) {
   const fileUrl = `${config.TELEGRAM_FILE_API}/${filePath}`;
-  logger.info("Downloading file from:", fileUrl);
+  logger.debug("Downloading file from:", fileUrl);
 
   const resp = await axios.get(fileUrl, {
     responseType: "arraybuffer",
