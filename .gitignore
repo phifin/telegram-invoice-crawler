@@ -1,2 +1,5 @@
 node_modules
 .env
+test_files/
+output_log.txt
+test_parser.js

@@ -12,6 +12,36 @@ const { parseItemsGeneric, parseSummaryGeneric } = require("./pdf-template-gener
 const { validateAndEnhanceInvoice } = require("./pdf-validation");
 const { runHeuristicFallbackParser } = require("./pdf-strategy-b");
 
+function dedupeInvoiceRows(invoice) {
+  if (Array.isArray(invoice.hdhhdvu)) {
+    const seenItems = new Set();
+    invoice.hdhhdvu = invoice.hdhhdvu.filter((item) => {
+      const key = [
+        item.stt,
+        item.ten,
+        item.dvtinh,
+        item.soluong,
+        item.dongia,
+        item.tien,
+        item.tsuat,
+      ].join("|");
+      if (seenItems.has(key)) return false;
+      seenItems.add(key);
+      return true;
+    });
+  }
+
+  if (Array.isArray(invoice.thttltsuat)) {
+    const seenSummaries = new Set();
+    invoice.thttltsuat = invoice.thttltsuat.filter((item) => {
+      const key = [item.tsuat, item.thtien, item.tthue].join("|");
+      if (seenSummaries.has(key)) return false;
+      seenSummaries.add(key);
+      return true;
+    });
+  }
+}
+
 async function parsePdfInvoice(buffer) {
   const pdfData = await pdfParse(buffer);
   const rawText = normalizePdfExtract(pdfData.text);
@@ -65,6 +95,8 @@ async function parsePdfInvoice(buffer) {
     logger.debug(`[STRATEGY A] Exception during parsing: ${err.message}`);
   }
 
+  dedupeInvoiceRows(invoice);
+
   let normalizedA = normalizeInvoiceOutput(invoice);
   let validateA = validateAndEnhanceInvoice(normalizedA, logger);
 
@@ -81,6 +113,7 @@ async function parsePdfInvoice(buffer) {
     
     try {
       runHeuristicFallbackParser(lines, fallbackInvoice, logger);
+      dedupeInvoiceRows(fallbackInvoice);
       const normalizedB = normalizeInvoiceOutput(fallbackInvoice);
       const validateB = validateAndEnhanceInvoice(normalizedB, logger);
       

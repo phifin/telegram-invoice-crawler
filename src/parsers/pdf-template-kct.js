@@ -6,8 +6,9 @@ const {
   extract,
   cleanColonValue,
   KNOWN_UNITS,
-  parseMoney,
-  partitionIntoValidNumbers,
+  parseQuantity,
+  resolvePriceAmountPair,
+  resolveTaxTotalPair,
   resolveItemMoneyTuple,
   resolveSummaryMoneyTuple,
 } = require("./pdf-utils");
@@ -35,88 +36,140 @@ function isTemplateKct(rawText, lines) {
 function parseItemsKct(lines) {
   const items = [];
   let sttCounter = 0;
+  const sortedUnits = KNOWN_UNITS.slice().sort((a, b) => b.length - a.length);
+
+  function findUnitWithNumericSuffix(text) {
+    let best = null;
+    for (const unit of sortedUnits) {
+      let fromIndex = 0;
+      while (fromIndex < text.length) {
+        const idx = text.indexOf(unit, fromIndex);
+        if (idx === -1) break;
+        const nextChar = text[idx + unit.length] || "";
+        if (/\d/.test(nextChar)) {
+          if (!best || idx > best.index || (idx === best.index && unit.length > best.unit.length)) {
+            best = { index: idx, unit };
+          }
+        }
+        fromIndex = idx + unit.length;
+      }
+    }
+    return best;
+  }
+
+  function resolveStructuredLeftBlob(rawSuffix, sttRaw) {
+    let best = null;
+    for (let i = 1; i < Math.min(rawSuffix.length, 8); i++) {
+      const qtyRaw = rawSuffix.slice(0, i);
+      const leftMoneyBlob = rawSuffix.slice(i);
+      if (!/^\d+(?:[.,]\d+)?$/.test(qtyRaw) || !leftMoneyBlob) continue;
+
+      const qty = parseQuantity(qtyRaw);
+      const priceAmount = resolvePriceAmountPair(leftMoneyBlob, qty, logger, `KCT row ${sttRaw} left`);
+      if (!priceAmount) continue;
+
+      const score = (priceAmount.score || 0) + (qty === 1 ? 10 : 0) - i;
+      if (!best || score > best.score) {
+        best = { qty, leftMoneyBlob, priceAmount, score };
+      }
+    }
+    return best;
+  }
 
   for (const line of lines) {
     const s = safeString(line);
     if (!/^\d/.test(s)) continue;
     if (!s.includes("KCT")) continue;
 
+    logger.debug(`[KCT] Raw row: ${s}`);
+
+    let parsed = null;
     const kctIdx = s.indexOf("KCT");
     const leftPart = s.slice(0, kctIdx);
     const rightPart = s.slice(kctIdx + 3);
+    const sttMatch = leftPart.match(/^(\d+)(.*)$/);
+    if (sttMatch) {
+      const sttRaw = sttMatch[1];
+      const rest = sttMatch[2];
+      const unitMatch = findUnitWithNumericSuffix(rest);
+      if (unitMatch) {
+        const nameRaw = rest.slice(0, unitMatch.index);
+        const qtyAndMoney = rest.slice(unitMatch.index + unitMatch.unit.length);
+        const structuredLeft = resolveStructuredLeftBlob(qtyAndMoney, sttRaw);
+        const taxTotal = structuredLeft
+          ? resolveTaxTotalPair(rightPart, structuredLeft.priceAmount.amount, logger, `KCT row ${sttRaw} right`)
+          : null;
 
-    const trailingNumMatch = leftPart.match(/([\d.,]+)$/);
-    if (!trailingNumMatch) continue;
+        logger.debug(
+          `[KCT] Structured row ${sttRaw}: normalized='${s}', qtyAndMoney='${qtyAndMoney}', rightBlob='${rightPart}', unit='${unitMatch.unit}'`,
+        );
 
-    const leftNumbersStr = trailingNumMatch[1];
-    const nameUnitPart = leftPart.slice(0, trailingNumMatch.index);
-
-    const solvedLeft = resolveItemMoneyTuple(leftNumbersStr, logger);
-    if (!solvedLeft) continue;
-
-    const rightMoney = rightPart.replace(/[^\d.]/g, "");
-    let taxAmount = 0;
-    let totalAfterTax = 0;
-    
-    if (rightMoney) {
-      const candidates = partitionIntoValidNumbers(rightMoney, 2);
-      if (candidates && candidates.length) {
-        let bestC = candidates[0];
-        let bestDiff = 999999;
-        for (const c of candidates) {
-          const t = parseMoney(c[0]);
-          const tot = parseMoney(c[1]);
-          const diff = Math.abs(t + solvedLeft.amtBefore - tot);
-          if (diff < bestDiff) { bestDiff = diff; bestC = c; }
+        if (structuredLeft && taxTotal) {
+          parsed = {
+            strategy: "A",
+            sttRaw,
+            name: safeString(nameRaw),
+            unit: safeString(unitMatch.unit),
+            qty: structuredLeft.qty,
+            price: structuredLeft.priceAmount.price,
+            amount: structuredLeft.priceAmount.amount,
+            taxAmount: taxTotal.taxAmount,
+            totalAfterTax: taxTotal.totalAfterTax,
+          };
         }
-        taxAmount = parseMoney(bestC[0]);
-        totalAfterTax = parseMoney(bestC[1]);
-      } else {
-        totalAfterTax = parseMoney(rightMoney);
       }
     }
 
-    const sttMatch = nameUnitPart.match(/^(\d+)(.*)$/);
-    if (!sttMatch) continue;
-    const sttRaw = sttMatch[1];
-    const restStr = sttMatch[2];
-
-    let unit = "";
-    let name = restStr;
-    for (const candidate of KNOWN_UNITS) {
-      const idx = restStr.lastIndexOf(candidate);
-      if (idx !== -1 && idx === restStr.length - candidate.length) {
-        unit = candidate;
-        name = restStr.slice(0, idx).trim();
-        break;
+    if (!parsed) {
+      const trailingNumMatch = leftPart.match(/([\d.,]+)$/);
+      if (trailingNumMatch) {
+        const leftNumbersStr = trailingNumMatch[1];
+        const nameUnitPart = leftPart.slice(0, trailingNumMatch.index);
+        const sttMatch = nameUnitPart.match(/^(\d+)(.*)$/);
+        if (sttMatch) {
+          const sttRaw = sttMatch[1];
+          const taxTotal = resolveTaxTotalPair(rightPart, 0, logger, `KCT row ${sttRaw} compact-right`);
+          const solvedLeft = resolveItemMoneyTuple(leftNumbersStr, logger, `KCT row ${sttRaw} compact-left`);
+          if (solvedLeft) {
+            parsed = {
+              strategy: "B",
+              sttRaw,
+              name: safeString(sttMatch[2]),
+              unit: "",
+              qty: solvedLeft.qty,
+              price: solvedLeft.price,
+              amount: solvedLeft.amtBefore,
+              taxAmount: taxTotal.taxAmount,
+              totalAfterTax: taxTotal.totalAfterTax || solvedLeft.amtBefore,
+            };
+            logger.debug(`[KCT] Fallback row ${sttRaw}: normalized='${s}', leftBlob='${leftNumbersStr}', rightBlob='${rightPart}'`);
+          }
+        }
       }
     }
 
-    if (!unit) {
-      const qtyUnitMatch = nameUnitPart.match(/^(.*?)([A-Za-zÀ-ỹĐđ ]+?)(\d+)$/u);
-      if (qtyUnitMatch) {
-        name = qtyUnitMatch[1].trim();
-        unit = qtyUnitMatch[2].trim();
-        qty = toInteger(qtyUnitMatch[3]);
-      } else {
-        name = nameUnitPart.trim();
-      }
+    if (!parsed) {
+      logger.debug(`[KCT] Rejected row: ${s}`);
+      continue;
     }
 
     sttCounter++;
     items.push({
       tchat: 1,
-      stt: toInteger(sttRaw) || sttCounter,
+      stt: toInteger(parsed.sttRaw) || sttCounter,
       ma: "",
-      ten: safeString(name),
-      dvtinh: safeString(unit),
-      soluong: solvedLeft.qty,
-      dongia: solvedLeft.price,
-      tien: solvedLeft.amtBefore,
+      ten: safeString(parsed.name),
+      dvtinh: safeString(parsed.unit),
+      soluong: parsed.qty,
+      dongia: parsed.price,
+      tien: parsed.amount,
       tsuat: "KCT",
-      _taxAmount: taxAmount,
-      _totalAfterTax: totalAfterTax,
+      _taxAmount: parsed.taxAmount,
+      _totalAfterTax: parsed.totalAfterTax,
     });
+    logger.debug(
+      `[KCT] Accepted row ${parsed.sttRaw} using strategy ${parsed.strategy}: qty=${parsed.qty}, price=${parsed.price}, amount=${parsed.amount}, tax=${parsed.taxAmount}, total=${parsed.totalAfterTax}`,
+    );
   }
 
   logger.debug(`[KCT] parseItemsKct: found ${items.length} items`);

@@ -114,6 +114,12 @@ function parseMoney(s) {
   return Number.isNaN(n) ? 0 : n;
 }
 
+function parseQuantity(s) {
+  const raw = safeString(s).replace(/\./g, "").replace(/,/g, ".");
+  const n = Number(raw);
+  return Number.isNaN(n) ? 0 : n;
+}
+
 function partitionIntoValidNumbers(str, count) {
   const isVndMoney = (s) => {
     if (s === "0") return true;
@@ -151,52 +157,171 @@ function partitionIntoValidNumbers(str, count) {
   return partition(str, count, 0);
 }
 
-function resolveItemMoneyTuple(str, logger) {
-  const candidates = partitionIntoValidNumbers(str, 3);
+function scoreMoney(value) {
+  if (value < 0) return -1000;
+  if (value === 0) return 2;
+  if (value <= 1e9) return 20;
+  if (value <= 1e12) return 8;
+  return -1000;
+}
+
+function scoreMathDiff(diff) {
+  if (diff <= 1) return 100 - diff;
+  if (diff <= 10) return 70 - diff;
+  if (diff <= 100) return 20 - diff / 10;
+  return -1000;
+}
+
+function logCandidateDecision(logger, prefix, rawInput, best, rejections) {
+  if (!logger) return;
+  logger.debug(`${prefix} raw='${rawInput}' chosen=${JSON.stringify(best || null)}`);
+  for (const rejection of rejections) {
+    logger.debug(`${prefix} rejected=${JSON.stringify(rejection)}`);
+  }
+}
+
+function resolvePriceAmountPair(str, qty, logger, context = "pair") {
+  const candidates = partitionIntoValidNumbers(str, 2);
   if (!candidates || candidates.length === 0) {
-    if (logger) logger.debug(`[resolveItemMoneyTuple] No valid partitions for '${str}'`);
+    logCandidateDecision(logger, `[${context}]`, str, null, [{ candidate: str, reason: "no valid partitions" }]);
     return null;
   }
-  
+
   let best = null;
-  let maxScore = -1;
+  let maxScore = -Infinity;
   const rejections = [];
-  
-  for (const c of candidates) {
-    try {
-      const qs = c[0].replace(/,/g, ".");
-      const q = Number(qs);
-      const p = parseMoney(c[1]);
-      const a = parseMoney(c[2]);
-      
-      if (p > 1e12 || a > 1e12 || q > 1e6) {
-        rejections.push({ candidate: c, reason: "exceeds bounds" });
-        continue;
+
+  for (const candidate of candidates) {
+    const price = parseMoney(candidate[0]);
+    const amount = parseMoney(candidate[1]);
+    const diff = Math.abs(qty * price - amount);
+    let score = scoreMoney(price) + scoreMoney(amount) + scoreMathDiff(diff);
+
+    if (qty <= 0 || qty > 1e6) {
+      rejections.push({ candidate, reason: "invalid quantity", qty });
+      continue;
+    }
+    if (price > 1e12 || amount > 1e12) {
+      rejections.push({ candidate, reason: "exceeds bounds", price, amount });
+      continue;
+    }
+    if (amount < price && qty >= 1) {
+      score -= 25;
+    }
+
+    if (score > maxScore) {
+      if (best) {
+        rejections.push({ candidate: best.raw, reason: `superseded by higher score ${score}` });
       }
-      
-      const diff = Math.abs(q * p - a);
-      let score = -1;
-      if (diff <= 1) {
-        score = 100 - diff;
-      } else if (diff <= 10) {
-        score = 50 - diff;
-      }
-      
-      if (score > maxScore) {
-        maxScore = score;
-        best = { qty: q, price: p, amtBefore: a, raw: c };
-      } else {
-        rejections.push({ candidate: c, reason: `math invariant score ${score} <= ${maxScore}` });
-      }
-    } catch(e) {
-      rejections.push({ candidate: c, reason: "parse error" });
+      maxScore = score;
+      best = { price, amount, raw: candidate, diff, score };
+    } else {
+      rejections.push({ candidate, reason: `lower score ${score}`, diff, qty, price, amount });
     }
   }
-  
-  if (logger) {
-    logger.debug(`[resolveItemMoneyTuple] Evaluated ${candidates.length} candidates for '${str}'. Best:`, best?.raw, `Rejections: ${rejections.length}`);
+
+  logCandidateDecision(logger, `[${context}]`, str, best, rejections);
+  return best;
+}
+
+function resolveTaxTotalPair(str, baseAmount, logger, context = "tax-total") {
+  const cleanStr = safeString(str).replace(/[^\d.]/g, "");
+  if (!cleanStr) {
+    return { taxAmount: 0, totalAfterTax: baseAmount, raw: [], diff: 0, score: 0 };
   }
-  
+
+  const candidates = partitionIntoValidNumbers(cleanStr, 2);
+  if (!candidates || candidates.length === 0) {
+    const fallbackTotal = parseMoney(cleanStr);
+    const fallback = {
+      taxAmount: Math.max(0, fallbackTotal - baseAmount),
+      totalAfterTax: fallbackTotal || baseAmount,
+      raw: [cleanStr],
+      diff: Math.abs((fallbackTotal || baseAmount) - baseAmount),
+      score: fallbackTotal ? 1 : 0,
+    };
+    logCandidateDecision(logger, `[${context}]`, cleanStr, fallback, [{ candidate: cleanStr, reason: "fallback single number" }]);
+    return fallback;
+  }
+
+  let best = null;
+  let maxScore = -Infinity;
+  const rejections = [];
+
+  for (const candidate of candidates) {
+    const taxAmount = parseMoney(candidate[0]);
+    const totalAfterTax = parseMoney(candidate[1]);
+    const diff = Math.abs(baseAmount + taxAmount - totalAfterTax);
+    let score = scoreMoney(taxAmount) + scoreMoney(totalAfterTax) + scoreMathDiff(diff);
+
+    if (totalAfterTax > 1e12 || taxAmount > 1e12) {
+      rejections.push({ candidate, reason: "exceeds bounds", taxAmount, totalAfterTax });
+      continue;
+    }
+    if (totalAfterTax < baseAmount) {
+      score -= 30;
+    }
+
+    if (score > maxScore) {
+      if (best) {
+        rejections.push({ candidate: best.raw, reason: `superseded by higher score ${score}` });
+      }
+      maxScore = score;
+      best = { taxAmount, totalAfterTax, raw: candidate, diff, score };
+    } else {
+      rejections.push({ candidate, reason: `lower score ${score}`, diff, baseAmount, taxAmount, totalAfterTax });
+    }
+  }
+
+  logCandidateDecision(logger, `[${context}]`, cleanStr, best, rejections);
+  return best;
+}
+
+function resolveItemMoneyTuple(str, logger, context = "item-tuple") {
+  const candidates = partitionIntoValidNumbers(str, 3);
+  if (!candidates || candidates.length === 0) {
+    logCandidateDecision(logger, `[${context}]`, str, null, [{ candidate: str, reason: "no valid partitions" }]);
+    return null;
+  }
+
+  let best = null;
+  let maxScore = -Infinity;
+  const rejections = [];
+
+  for (const candidate of candidates) {
+    try {
+      const qty = parseQuantity(candidate[0]);
+      const price = parseMoney(candidate[1]);
+      const amtBefore = parseMoney(candidate[2]);
+      const diff = Math.abs(qty * price - amtBefore);
+      let score = scoreMathDiff(diff) + scoreMoney(price) + scoreMoney(amtBefore);
+
+      if (qty <= 0 || qty > 1e6) {
+        rejections.push({ candidate, reason: "invalid quantity", qty });
+        continue;
+      }
+      if (price > 1e12 || amtBefore > 1e12) {
+        rejections.push({ candidate, reason: "exceeds bounds", qty, price, amtBefore });
+        continue;
+      }
+      if (qty === 1) score += 8;
+      if (amtBefore < price && qty >= 1) score -= 25;
+
+      if (score > maxScore) {
+        if (best) {
+          rejections.push({ candidate: best.raw, reason: `superseded by higher score ${score}` });
+        }
+        maxScore = score;
+        best = { qty, price, amtBefore, raw: candidate, diff, score };
+      } else {
+        rejections.push({ candidate, reason: `lower score ${score}`, diff, qty, price, amtBefore });
+      }
+    } catch (error) {
+      rejections.push({ candidate, reason: "parse error", message: error.message });
+    }
+  }
+
+  logCandidateDecision(logger, `[${context}]`, str, best, rejections);
   return best;
 }
 
@@ -209,7 +334,7 @@ function resolveSummaryMoneyTuple(str, count, logger) {
   }
   
   let best = null;
-  let maxScore = -1;
+  let maxScore = -Infinity;
   const rejections = [];
   
   for (const c of candidates) {
@@ -224,28 +349,36 @@ function resolveSummaryMoneyTuple(str, count, logger) {
       }
       
       const diff = Math.abs(thtien + tthue - tong);
-      let score = -1;
-      if (diff <= 1) score = 100 - diff;
-      else if (diff <= 10) score = 50 - diff;
+      let score = scoreMoney(thtien) + scoreMoney(tthue) + scoreMoney(tong) + scoreMathDiff(diff);
+      if (tong < thtien || tong < tthue) score -= 120;
+      if (tthue > thtien) score -= 90;
+      if (thtien > 0 && tthue > thtien * 0.5) score -= 60;
+      if (thtien > tong) score -= 120;
       
       if (score > maxScore) {
         maxScore = score;
-        best = { thtien, tthue, tong, raw: c };
+        best = { thtien, tthue, tong, raw: c, diff, score };
       } else {
-        rejections.push({ candidate: c, reason: "math invariant lower score" });
+        rejections.push({ candidate: c, reason: "math invariant lower score", diff, score });
       }
     } else if (count === 2) {
-      const tthue = parseMoney(c[0]);
-      const tong = parseMoney(c[1]);
-      if (tthue > 1e12 || tong > 1e12) continue;
-      const score = 100;
-      if (score > maxScore) { maxScore = score; best = { thtien: 0, tthue, tong, raw: c }; }
+      const first = parseMoney(c[0]);
+      const second = parseMoney(c[1]);
+      if (first > 1e12 || second > 1e12) {
+        rejections.push({ candidate: c, reason: "out of bounds", first, second });
+        continue;
+      }
+      const score = scoreMoney(first) + scoreMoney(second) + (second >= first ? 25 : -25);
+      if (score > maxScore) {
+        maxScore = score;
+        best = { thtien: first, tthue: 0, tong: second, raw: c, diff: Math.abs(second - first), score };
+      } else {
+        rejections.push({ candidate: c, reason: "lower score", score, first, second });
+      }
     }
   }
   
-  if (logger) {
-    logger.debug(`[resolveSummaryMoneyTuple] Evaluated ${candidates.length} candidates for '${cleanStr}'. Best: ${best?.raw}`);
-  }
+  logCandidateDecision(logger, "[summary-tuple]", cleanStr, best, rejections);
   return best;
 }
 
@@ -260,7 +393,10 @@ module.exports = {
   findMultiLineAddressAfterLabelBlock,
   KNOWN_UNITS,
   parseMoney,
+  parseQuantity,
   partitionIntoValidNumbers,
+  resolvePriceAmountPair,
+  resolveTaxTotalPair,
   resolveItemMoneyTuple,
   resolveSummaryMoneyTuple,
 };

@@ -6,8 +6,9 @@ const {
   extract,
   cleanColonValue,
   KNOWN_UNITS,
-  parseMoney,
-  partitionIntoValidNumbers,
+  parseQuantity,
+  resolvePriceAmountPair,
+  resolveTaxTotalPair,
   resolveItemMoneyTuple,
   resolveSummaryMoneyTuple,
 } = require("./pdf-utils");
@@ -35,71 +36,161 @@ function isTemplateVatRates(rawText, lines) {
 function parseItemsVatRates(lines) {
   const items = [];
   let sttCounter = 0;
+  const sortedUnits = KNOWN_UNITS.slice().sort((a, b) => b.length - a.length);
+
+  function findUnitWithNumericSuffix(text) {
+    let best = null;
+    for (const unit of sortedUnits) {
+      let fromIndex = 0;
+      while (fromIndex < text.length) {
+        const idx = text.indexOf(unit, fromIndex);
+        if (idx === -1) break;
+        const nextChar = text[idx + unit.length] || "";
+        if (/\d/.test(nextChar)) {
+          if (!best || idx > best.index || (idx === best.index && unit.length > best.unit.length)) {
+            best = { index: idx, unit };
+          }
+        }
+        fromIndex = idx + unit.length;
+      }
+    }
+    return best;
+  }
+
+  function resolveStructuredLeftBlob(rawSuffix, sttRaw) {
+    let best = null;
+    const variants = [rawSuffix];
+    if (rawSuffix.length > 1) {
+      variants.push(rawSuffix.slice(1));
+    }
+
+    for (const variant of variants) {
+      for (let i = 1; i < Math.min(variant.length, 8); i++) {
+        const qtyRaw = variant.slice(0, i);
+        const leftMoneyBlob = variant.slice(i);
+        if (!/^\d+(?:[.,]\d+)?$/.test(qtyRaw) || !leftMoneyBlob) continue;
+
+        const qty = parseQuantity(qtyRaw);
+        const priceAmount = resolvePriceAmountPair(leftMoneyBlob, qty, logger, `VAT row ${sttRaw} left`);
+        if (!priceAmount) continue;
+
+        const score = (priceAmount.score || 0) + (qty === 1 ? 10 : 0) - i - (variant !== rawSuffix ? 2 : 0);
+        if (!best || score > best.score) {
+          best = { qty, leftMoneyBlob, priceAmount, score, normalizedFrom: variant };
+        }
+      }
+    }
+    return best;
+  }
 
   for (const line of lines) {
     const s = safeString(line);
     if (!/^\d/.test(s)) continue;
     if (!/\d+%/.test(s)) continue;
 
-    const percentMatch = s.match(/(\d{1,3}%)([\d.,]*)$/);
-    if (!percentMatch) continue;
+    logger.debug(`[VAT_RATES] Raw row: ${s}`);
 
-    const taxRateStr = percentMatch[1];
-    const rightOfPercent = percentMatch[2];
-    const leftOfPercent = s.slice(0, percentMatch.index);
+    let parsed = null;
+    const percentMatches = [...s.matchAll(/(10|8|5|0)%/g)];
+    const fallbackPercentMatches = percentMatches.length ? percentMatches : [...s.matchAll(/(\d{1,2})%/g)];
+    for (let idx = fallbackPercentMatches.length - 1; idx >= 0 && !parsed; idx--) {
+      const percentMatch = fallbackPercentMatches[idx];
+      const taxRateStr = `${percentMatch[1]}%`;
+      const leftOfPercent = s.slice(0, percentMatch.index);
+      const rightMoneyBlob = s.slice(percentMatch.index + taxRateStr.length);
+      const sttMatch = leftOfPercent.match(/^(\d+)(.*)$/);
+      if (!sttMatch) continue;
 
-    const trailingNumMatch = leftOfPercent.match(/([\d.,]+)$/);
-    if (!trailingNumMatch) continue;
+      const sttRaw = sttMatch[1];
+      const rest = sttMatch[2];
+      const unitMatch = findUnitWithNumericSuffix(rest);
+      if (!unitMatch) continue;
 
-    const leftNumbersStr = trailingNumMatch[1];
-    const nameStr = leftOfPercent.slice(0, trailingNumMatch.index);
+      const nameRaw = rest.slice(0, unitMatch.index);
+      let qtyAndMoney = rest.slice(unitMatch.index + unitMatch.unit.length);
+      if (nameRaw && /\d$/.test(nameRaw) && qtyAndMoney[0] === nameRaw[nameRaw.length - 1]) {
+        qtyAndMoney = qtyAndMoney.slice(1);
+      }
+      const structuredLeft = resolveStructuredLeftBlob(qtyAndMoney, sttRaw);
+      const taxTotal = structuredLeft
+        ? resolveTaxTotalPair(rightMoneyBlob, structuredLeft.priceAmount.amount, logger, `VAT row ${sttRaw} right`)
+        : null;
 
-    const sttMatch = nameStr.match(/^(\d+)(.*)$/);
-    if (!sttMatch) continue;
+      logger.debug(
+        `[VAT_RATES] Structured row ${sttRaw}: normalized='${s}', qtyAndMoney='${qtyAndMoney}', rightBlob='${rightMoneyBlob}', unit='${unitMatch.unit}'`,
+      );
 
-    const sttRaw = sttMatch[1];
-    let nameUnit = sttMatch[2];
-
-    const solvedLeft = resolveItemMoneyTuple(leftNumbersStr, logger);
-    if (!solvedLeft) continue;
-
-    let taxAmt = 0;
-    let totalAfterTax = 0;
-    if (rightOfPercent) {
-      const candidates = partitionIntoValidNumbers(rightOfPercent, 2);
-      if (candidates && candidates.length) {
-        let bestC = candidates[0];
-        let bestDiff = 999999;
-        for (const c of candidates) {
-          const t = parseMoney(c[0]);
-          const tot = parseMoney(c[1]);
-          const diff = Math.abs(t + solvedLeft.amtBefore - tot);
-          if (diff < bestDiff) { bestDiff = diff; bestC = c; }
-        }
-        taxAmt = parseMoney(bestC[0]);
-        totalAfterTax = parseMoney(bestC[1]);
-      } else {
-        const fallback = rightOfPercent.match(/^([\d.,]+)([\d.,]+)$/);
-        if (fallback) {
-          taxAmt = parseMoney(fallback[1]);
-          totalAfterTax = parseMoney(fallback[2]);
-        }
+      if (structuredLeft && taxTotal) {
+        parsed = {
+          strategy: "A",
+          sttRaw,
+          nameUnit: safeString(nameRaw),
+          unit: safeString(unitMatch.unit),
+          qty: structuredLeft.qty,
+          price: structuredLeft.priceAmount.price,
+          amount: structuredLeft.priceAmount.amount,
+          taxRate: toInteger(taxRateStr.replace("%", "")),
+          taxAmount: taxTotal.taxAmount,
+          totalAfterTax: taxTotal.totalAfterTax,
+        };
       }
     }
 
+    if (!parsed) {
+      for (let idx = fallbackPercentMatches.length - 1; idx >= 0; idx--) {
+        const percentMatch = fallbackPercentMatches[idx];
+        const taxRateStr = `${percentMatch[1]}%`;
+        const rightOfPercent = s.slice(percentMatch.index + taxRateStr.length);
+        const leftOfPercent = s.slice(0, percentMatch.index);
+        const trailingNumMatch = leftOfPercent.match(/([\d.,]+)$/);
+        if (!trailingNumMatch) continue;
+
+        const leftNumbersStr = trailingNumMatch[1];
+        const nameStr = leftOfPercent.slice(0, trailingNumMatch.index);
+        const sttMatch = nameStr.match(/^(\d+)(.*)$/);
+        if (!sttMatch) continue;
+
+        const sttRaw = sttMatch[1];
+        const nameUnit = sttMatch[2];
+        const solvedLeft = resolveItemMoneyTuple(leftNumbersStr, logger, `VAT row ${sttRaw} compact-left`);
+        if (!solvedLeft) continue;
+
+        const taxTotal = resolveTaxTotalPair(rightOfPercent, solvedLeft.amtBefore, logger, `VAT row ${sttRaw} compact-right`);
+        parsed = {
+          strategy: "B",
+          sttRaw,
+          nameUnit,
+          unit: "",
+          qty: solvedLeft.qty,
+          price: solvedLeft.price,
+          amount: solvedLeft.amtBefore,
+          taxRate: toInteger(taxRateStr.replace("%", "")),
+          taxAmount: taxTotal.taxAmount,
+          totalAfterTax: taxTotal.totalAfterTax,
+        };
+        logger.debug(`[VAT_RATES] Fallback row ${sttRaw}: normalized='${s}', leftBlob='${leftNumbersStr}', rightBlob='${rightOfPercent}'`);
+        break;
+      }
+    }
+
+    if (!parsed) {
+      logger.debug(`[VAT_RATES] Rejected row: ${s}`);
+      continue;
+    }
+
     sttCounter++;
-    let name = nameUnit;
-    let unit = "";
+    let name = parsed.nameUnit;
+    let unit = parsed.unit || "";
 
     for (const candidate of KNOWN_UNITS) {
-      if (nameUnit.endsWith(candidate)) {
+      if (!unit && parsed.nameUnit.endsWith(candidate)) {
         unit = candidate;
-        name = nameUnit.slice(0, -candidate.length).trim();
+        name = parsed.nameUnit.slice(0, -candidate.length).trim();
         break;
       }
     }
     if (!unit) {
-      const fallback = nameUnit.match(/^(.*?)([A-Za-zÀ-ỹĐđ\s]+)$/u);
+      const fallback = parsed.nameUnit.match(/^(.*?)([A-Za-zÀ-ỹĐđ\s]+)$/u);
       if (fallback) {
         name = fallback[1].trim();
         unit = fallback[2].trim();
@@ -108,17 +199,20 @@ function parseItemsVatRates(lines) {
 
     items.push({
       tchat: 1,
-      stt: toInteger(sttRaw) || sttCounter,
+      stt: toInteger(parsed.sttRaw) || sttCounter,
       ma: "",
       ten: safeString(name),
       dvtinh: safeString(unit),
-      soluong: solvedLeft.qty,
-      dongia: solvedLeft.price,
-      tien: solvedLeft.amtBefore,
-      tsuat: toInteger(taxRateStr.replace("%", "")),
-      _taxAmount: taxAmt,
-      _totalAfterTax: totalAfterTax,
+      soluong: parsed.qty,
+      dongia: parsed.price,
+      tien: parsed.amount,
+      tsuat: parsed.taxRate,
+      _taxAmount: parsed.taxAmount,
+      _totalAfterTax: parsed.totalAfterTax,
     });
+    logger.debug(
+      `[VAT_RATES] Accepted row ${parsed.sttRaw} using strategy ${parsed.strategy}: qty=${parsed.qty}, price=${parsed.price}, amount=${parsed.amount}, tax=${parsed.taxAmount}, total=${parsed.totalAfterTax}`,
+    );
   }
 
   logger.debug(`[VAT_RATES] parseItemsVatRates: found ${items.length} items`);

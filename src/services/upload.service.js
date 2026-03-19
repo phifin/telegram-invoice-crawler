@@ -16,6 +16,10 @@ async function uploadInvoice(fileName, baseBinary, parsedData) {
   const payload = { fileName, pdfBinary: baseBinary, ...parsedData };
 
   logger.debug("Posting to TARGET_API:", config.TARGET_API);
+  logger.debug(
+    "Outbound payload:",
+    JSON.stringify({ ...payload, pdfBinary: `[masked:${baseBinary.length} chars]` }, null, 2),
+  );
 
   const resp = await axios.post(config.TARGET_API, payload, {
     headers: { "Content-Type": "application/json" },

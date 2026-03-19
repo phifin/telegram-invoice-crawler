@@ -58,16 +58,40 @@ function validateAndEnhanceInvoice(invoice, logger) {
   for (let i = 0; i < invoice.hdhhdvu.length; i++) {
     const item = invoice.hdhhdvu[i];
     const itemTotal = toNumber(item.tien);
+    const itemQty = toNumber(item.soluong);
+    const itemPrice = toNumber(item.dongia);
     calcAmtBefore += itemTotal;
     
+    if (typeof itemQty !== "number" || itemQty <= 0) {
+      addError(`hdhhdvu[${i}].soluong`, "REQUIRED", "Quantity is missing or invalid", item.soluong);
+    }
+    if (typeof itemPrice !== "number" || itemPrice < 0) {
+      addError(`hdhhdvu[${i}].dongia`, "REQUIRED", "Unit price is missing or invalid", item.dongia);
+    }
+    if (typeof itemTotal !== "number" || itemTotal < 0) {
+      addError(`hdhhdvu[${i}].tien`, "REQUIRED", "Line amount is missing or invalid", item.tien);
+    }
+
     // Bounds check on items to prevent DB explosion
-    if (toNumber(item.dongia) > 1e13) {
+    if (itemPrice > 1e13) {
       addError(`hdhhdvu[${i}].dongia`, "REQUIRED", "Unit price astronomically large", item.dongia);
+    }
+    if (itemTotal > 1e13) {
+      addError(`hdhhdvu[${i}].tien`, "REQUIRED", "Line amount astronomically large", item.tien);
+    }
+    if (typeof itemQty === "number" && typeof itemPrice === "number" && typeof itemTotal === "number") {
+      const diff = Math.abs(itemQty * itemPrice - itemTotal);
+      if (diff > 1) {
+        addError(`hdhhdvu[${i}]`, "CHECK", "Quantity x Unit price does not match line amount", `qty:${itemQty} price:${itemPrice} amount:${itemTotal}`);
+      }
     }
   }
 
-  invoice.thttltsuat.forEach(ts => {
+  invoice.thttltsuat.forEach((ts, index) => {
     calcTaxAmt += toNumber(ts.tthue);
+    if (toNumber(ts.thtien) > 1e13 || toNumber(ts.tthue) > 1e13) {
+      addError(`thttltsuat[${index}]`, "REQUIRED", "Tax summary contains absurd magnitude", ts);
+    }
   });
 
   const parsedTotal = toNumber(invoice.tgtttbso);
@@ -76,12 +100,16 @@ function validateAndEnhanceInvoice(invoice, logger) {
 
   // Check Math constraints
   if (parsedAmtBefore > 0 && Math.abs(calcAmtBefore - parsedAmtBefore) > 100) {
-    addError("tgtcthue", "WARNING", "Sum of items does NOT match declared amount before tax", `Sum:${calcAmtBefore} vs Declared:${parsedAmtBefore}`);
+    addError("tgtcthue", "CHECK", "Sum of items does NOT match declared amount before tax", `Sum:${calcAmtBefore} vs Declared:${parsedAmtBefore}`);
+  }
+
+  if (parsedTaxAmt > 0 && Math.abs(calcTaxAmt - parsedTaxAmt) > 100) {
+    addError("tgtthue", "CHECK", "Tax summary does NOT match declared total tax", `Summary:${calcTaxAmt} vs Declared:${parsedTaxAmt}`);
   }
 
   const expectedTotal = parsedAmtBefore + parsedTaxAmt;
   if (expectedTotal > 0 && Math.abs(expectedTotal - parsedTotal) > 100) {
-     addError("tgtttbso", "WARNING", "Subtotal + Tax != Total Payment", `Subtotal:${parsedAmtBefore} + Tax:${parsedTaxAmt} != Total:${parsedTotal}`);
+     addError("tgtttbso", "CHECK", "Subtotal + Tax != Total Payment", `Subtotal:${parsedAmtBefore} + Tax:${parsedTaxAmt} != Total:${parsedTotal}`);
   }
 
   if (parsedTotal > 1e13) {
