@@ -6,6 +6,11 @@ const { normalizeInvoiceOutput, emptyInvoiceShape } = require("../utils/common")
 
 const { normalizePdfExtract, splitLines } = require("./pdf-utils");
 const { parseHeader, parseSeller, parseBuyer } = require("./pdf-header");
+const {
+  isTemplateMinvoiceDetailedVat,
+  parseItemsMinvoiceDetailedVat,
+  parseSummaryMinvoiceDetailedVat,
+} = require("./pdf-template-minvoice-detailed-vat");
 const { isTemplateVatRates, parseItemsVatRates, parseSummaryVatRates } = require("./pdf-template-vat");
 const { isTemplateKct, parseItemsKct, parseSummaryKct } = require("./pdf-template-kct");
 const { parseItemsGeneric, parseSummaryGeneric } = require("./pdf-template-generic");
@@ -73,8 +78,15 @@ async function parsePdfInvoice(buffer) {
 
   // 2. Template detection (KCT takes priority)
   const useKct = isTemplateKct(rawText, lines);
-  const useVatRates = !useKct && isTemplateVatRates(rawText, lines);
-  const templateName = useKct ? "KCT" : useVatRates ? "VAT_RATES" : "GENERIC";
+  const useMinvoiceDetailedVat = !useKct && isTemplateMinvoiceDetailedVat(rawText, lines);
+  const useVatRates = !useKct && !useMinvoiceDetailedVat && isTemplateVatRates(rawText, lines);
+  const templateName = useKct
+    ? "KCT"
+    : useMinvoiceDetailedVat
+      ? "MINVOICE_DETAILED_VAT"
+      : useVatRates
+        ? "VAT_RATES"
+        : "GENERIC";
 
   logger.debug(`[TEMPLATE] Detected Strategy A: ${templateName}`);
 
@@ -83,6 +95,14 @@ async function parsePdfInvoice(buffer) {
     if (useKct) {
       invoice.hdhhdvu = parseItemsKct(lines);
       parseSummaryKct(lines, rawText, invoice);
+    } else if (useMinvoiceDetailedVat) {
+      invoice.hdhhdvu = parseItemsMinvoiceDetailedVat(lines);
+      parseSummaryMinvoiceDetailedVat(lines, rawText, invoice);
+      if (invoice.hdhhdvu.length < 3) {
+        logger.debug("[MINVOICE_DETAILED_VAT] Parsed too few item rows, retrying with VAT_RATES parser.");
+        invoice.hdhhdvu = parseItemsVatRates(lines);
+        parseSummaryVatRates(lines, rawText, invoice);
+      }
     } else if (useVatRates) {
       invoice.hdhhdvu = parseItemsVatRates(lines);
       parseSummaryVatRates(lines, rawText, invoice);

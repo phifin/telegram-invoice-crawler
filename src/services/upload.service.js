@@ -4,6 +4,22 @@ const axios = require("axios");
 const config = require("../../config");
 const logger = require("../../logger");
 
+function stripInternalFields(value) {
+  if (Array.isArray(value)) {
+    return value.map(stripInternalFields);
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key.startsWith("_")) continue;
+    out[key] = stripInternalFields(child);
+  }
+  return out;
+}
+
 /**
  * POST invoice data to the target API.
  * @param {string} fileName
@@ -13,7 +29,7 @@ const logger = require("../../logger");
  */
 async function uploadInvoice(fileName, baseBinary, parsedData) {
   // Backend expects a flat document: fileName + pdfBinary + all invoice fields at root level
-  const payload = { fileName, pdfBinary: baseBinary, ...parsedData };
+  const payload = { fileName, pdfBinary: baseBinary, ...stripInternalFields(parsedData) };
 
   logger.debug("Posting to TARGET_API:", config.TARGET_API);
   logger.debug(

@@ -85,6 +85,20 @@ function validateAndEnhanceInvoice(invoice, logger) {
         addError(`hdhhdvu[${i}]`, "CHECK", "Quantity x Unit price does not match line amount", `qty:${itemQty} price:${itemPrice} amount:${itemTotal}`);
       }
     }
+
+    const itemVatAmount = toNumber(item._taxAmount);
+    const itemTotalAfterTax = toNumber(item._totalAfterTax);
+    if (typeof itemVatAmount === "number" && typeof itemTotalAfterTax === "number" && itemTotalAfterTax > 0) {
+      const diff = Math.abs(itemTotal + itemVatAmount - itemTotalAfterTax);
+      if (diff > 1) {
+        addError(
+          `hdhhdvu[${i}]`,
+          "CHECK",
+          "Amount before VAT + VAT amount does not match total after VAT",
+          `before:${itemTotal} vat:${itemVatAmount} after:${itemTotalAfterTax}`,
+        );
+      }
+    }
   }
 
   invoice.thttltsuat.forEach((ts, index) => {
@@ -105,6 +119,43 @@ function validateAndEnhanceInvoice(invoice, logger) {
 
   if (parsedTaxAmt > 0 && Math.abs(calcTaxAmt - parsedTaxAmt) > 100) {
     addError("tgtthue", "CHECK", "Tax summary does NOT match declared total tax", `Summary:${calcTaxAmt} vs Declared:${parsedTaxAmt}`);
+  }
+
+  if (invoice.thttltsuat.length > 0 && invoice.hdhhdvu.length > 0) {
+    for (const summaryRow of invoice.thttltsuat) {
+      const matchingItems = invoice.hdhhdvu.filter((item) => toNumber(item.tsuat) === toNumber(summaryRow.tsuat));
+      if (matchingItems.length === 0) continue;
+
+      const groupBeforeVat = matchingItems.reduce((sum, item) => sum + toNumber(item.tien), 0);
+      const groupVat = matchingItems.reduce((sum, item) => sum + toNumber(item._taxAmount), 0);
+      const groupAfterVat = matchingItems.reduce((sum, item) => sum + toNumber(item._totalAfterTax), 0);
+
+      if (Math.abs(groupBeforeVat - toNumber(summaryRow.thtien)) > 1) {
+        addError(`thttltsuat[${summaryRow.tsuat}]`, "CHECK", "Item subtotal does not match VAT summary subtotal", `items:${groupBeforeVat} summary:${summaryRow.thtien}`);
+      }
+      if (Math.abs(groupVat - toNumber(summaryRow.tthue)) > 1) {
+        addError(`thttltsuat[${summaryRow.tsuat}]`, "CHECK", "Item VAT sum does not match VAT summary tax", `items:${groupVat} summary:${summaryRow.tthue}`);
+      }
+      if (summaryRow._totalAmount && Math.abs(groupAfterVat - toNumber(summaryRow._totalAmount)) > 1) {
+        addError(`thttltsuat[${summaryRow.tsuat}]`, "CHECK", "Item total-after-VAT sum does not match VAT summary total", `items:${groupAfterVat} summary:${summaryRow._totalAmount}`);
+      }
+    }
+  }
+
+  if (invoice._grandTotals) {
+    const allBeforeVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item.tien), 0);
+    const allVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item._taxAmount), 0);
+    const allAfterVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item._totalAfterTax), 0);
+
+    if (Math.abs(allBeforeVat - toNumber(invoice._grandTotals.amountBeforeVat)) > 1) {
+      addError("grandTotals.amountBeforeVat", "CHECK", "Grand subtotal from items does not match grand summary", `items:${allBeforeVat} summary:${invoice._grandTotals.amountBeforeVat}`);
+    }
+    if (Math.abs(allVat - toNumber(invoice._grandTotals.vatAmount)) > 1) {
+      addError("grandTotals.vatAmount", "CHECK", "Grand VAT from items does not match grand summary", `items:${allVat} summary:${invoice._grandTotals.vatAmount}`);
+    }
+    if (Math.abs(allAfterVat - toNumber(invoice._grandTotals.totalAmount)) > 1) {
+      addError("grandTotals.totalAmount", "CHECK", "Grand total-after-VAT from items does not match grand summary", `items:${allAfterVat} summary:${invoice._grandTotals.totalAmount}`);
+    }
   }
 
   const expectedTotal = parsedAmtBefore + parsedTaxAmt;

@@ -90,6 +90,7 @@ function emptyInvoiceShape() {
     nmdchi: "",
     hdhhdvu: [],
     thttltsuat: [],
+    _grandTotals: null,
     tgtcthue: 0,
     tgtthue: 0,
     ttcktmai: 0,
@@ -137,6 +138,11 @@ function normalizeInvoiceOutput(raw) {
           dongia: typeof dg === "number" ? dg : item.dongia,
           tien: typeof ti === "number" ? ti : item.tien,
           tsuat: typeof ts === "number" ? ts : safeString(item.tsuat),
+          _taxAmount: typeof toNumber(item._taxAmount) === "number" ? toNumber(item._taxAmount) : 0,
+          _totalAfterTax: typeof toNumber(item._totalAfterTax) === "number" ? toNumber(item._totalAfterTax) : 0,
+          _rawRow: safeString(item._rawRow),
+          _normalizedRow: safeString(item._normalizedRow),
+          _tailTokens: item._tailTokens || null,
         };
       })
     : [];
@@ -148,9 +154,29 @@ function normalizeInvoiceOutput(raw) {
           tsuat: typeof ts === "number" ? ts : safeString(item.tsuat),
           thtien: typeof toNumber(item.thtien) === "number" ? toNumber(item.thtien) : 0,
           tthue: typeof toNumber(item.tthue) === "number" ? toNumber(item.tthue) : 0,
+          _totalAmount: typeof toNumber(item._totalAmount) === "number" ? toNumber(item._totalAmount) : 0,
+          _rawRow: safeString(item._rawRow),
         };
       })
     : [];
+
+  out._grandTotals = raw._grandTotals
+    ? {
+        amountBeforeVat:
+          typeof toNumber(raw._grandTotals.amountBeforeVat) === "number"
+            ? toNumber(raw._grandTotals.amountBeforeVat)
+            : 0,
+        vatAmount:
+          typeof toNumber(raw._grandTotals.vatAmount) === "number"
+            ? toNumber(raw._grandTotals.vatAmount)
+            : 0,
+        totalAmount:
+          typeof toNumber(raw._grandTotals.totalAmount) === "number"
+            ? toNumber(raw._grandTotals.totalAmount)
+            : 0,
+        _rawRow: safeString(raw._grandTotals._rawRow),
+      }
+    : null;
 
   out.tgtcthue = typeof toNumber(raw.tgtcthue) === "number" ? toNumber(raw.tgtcthue) : 0;
   out.tgtthue = typeof toNumber(raw.tgtthue) === "number" ? toNumber(raw.tgtthue) : 0;
