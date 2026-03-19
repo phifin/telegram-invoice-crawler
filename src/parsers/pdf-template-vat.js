@@ -7,7 +7,9 @@ const {
   cleanColonValue,
   KNOWN_UNITS,
   parseMoney,
-  splitCompactMoneyRun,
+  partitionIntoValidNumbers,
+  resolveItemMoneyTuple,
+  resolveSummaryMoneyTuple,
 } = require("./pdf-utils");
 
 // ---------------------------------------------------------------------------
@@ -39,12 +41,51 @@ function parseItemsVatRates(lines) {
     if (!/^\d/.test(s)) continue;
     if (!/\d+%/.test(s)) continue;
 
-    const vatMatch = s.match(
-      /^(\d+)(.+?)(\d+)([\d.,]+)([\d.,]+)(\d{1,3}%)([\d.,]+)([\d.,]+)$/,
-    );
-    if (!vatMatch) continue;
+    const percentMatch = s.match(/(\d{1,3}%)([\d.,]*)$/);
+    if (!percentMatch) continue;
 
-    const [, sttRaw, nameUnit, qtyRaw, unitPriceRaw, amtBeforeRaw, taxRateRaw, taxAmtRaw, totalAfterTaxRaw] = vatMatch;
+    const taxRateStr = percentMatch[1];
+    const rightOfPercent = percentMatch[2];
+    const leftOfPercent = s.slice(0, percentMatch.index);
+
+    const trailingNumMatch = leftOfPercent.match(/([\d.,]+)$/);
+    if (!trailingNumMatch) continue;
+
+    const leftNumbersStr = trailingNumMatch[1];
+    const nameStr = leftOfPercent.slice(0, trailingNumMatch.index);
+
+    const sttMatch = nameStr.match(/^(\d+)(.*)$/);
+    if (!sttMatch) continue;
+
+    const sttRaw = sttMatch[1];
+    let nameUnit = sttMatch[2];
+
+    const solvedLeft = resolveItemMoneyTuple(leftNumbersStr, logger);
+    if (!solvedLeft) continue;
+
+    let taxAmt = 0;
+    let totalAfterTax = 0;
+    if (rightOfPercent) {
+      const candidates = partitionIntoValidNumbers(rightOfPercent, 2);
+      if (candidates && candidates.length) {
+        let bestC = candidates[0];
+        let bestDiff = 999999;
+        for (const c of candidates) {
+          const t = parseMoney(c[0]);
+          const tot = parseMoney(c[1]);
+          const diff = Math.abs(t + solvedLeft.amtBefore - tot);
+          if (diff < bestDiff) { bestDiff = diff; bestC = c; }
+        }
+        taxAmt = parseMoney(bestC[0]);
+        totalAfterTax = parseMoney(bestC[1]);
+      } else {
+        const fallback = rightOfPercent.match(/^([\d.,]+)([\d.,]+)$/);
+        if (fallback) {
+          taxAmt = parseMoney(fallback[1]);
+          totalAfterTax = parseMoney(fallback[2]);
+        }
+      }
+    }
 
     sttCounter++;
     let name = nameUnit;
@@ -71,12 +112,12 @@ function parseItemsVatRates(lines) {
       ma: "",
       ten: safeString(name),
       dvtinh: safeString(unit),
-      soluong: toNumber(qtyRaw),
-      dongia: parseMoney(unitPriceRaw),
-      tien: parseMoney(amtBeforeRaw),
-      tsuat: toInteger(taxRateRaw.replace("%", "")),
-      _taxAmount: parseMoney(taxAmtRaw),
-      _totalAfterTax: parseMoney(totalAfterTaxRaw),
+      soluong: solvedLeft.qty,
+      dongia: solvedLeft.price,
+      tien: solvedLeft.amtBefore,
+      tsuat: toInteger(taxRateStr.replace("%", "")),
+      _taxAmount: taxAmt,
+      _totalAfterTax: totalAfterTax,
     });
   }
 
@@ -98,13 +139,11 @@ function parseCompactVatSummaryLine(line) {
   if (!m) return null;
 
   const tsuat = toInteger(m[1]);
-  const split = splitCompactMoneyRun(m[2], 3);
-  if (split) return { tsuat, thtien: split[0], tthue: split[1], tong: split[2] };
-
-  // basic fallback
-  const alt = m[2].match(/^([\d.]+)([\d.]+)([\d.]+)$/);
-  if (!alt) return null;
-  return { tsuat, thtien: parseMoney(alt[1]), tthue: parseMoney(alt[2]), tong: parseMoney(alt[3]) };
+  const solved = resolveSummaryMoneyTuple(m[2], 3, logger);
+  if (solved) {
+    return { tsuat, thtien: solved.thtien, tthue: solved.tthue, tong: solved.tong };
+  }
+  return null;
 }
 
 function parseCompactTotalLine(line) {
@@ -114,11 +153,11 @@ function parseCompactTotalLine(line) {
   const moneyRun = raw.replace(/[^\d.]/g, "");
   if (!moneyRun) return null;
 
-  const split3 = splitCompactMoneyRun(moneyRun, 3);
-  if (split3) return { tgtcthue: split3[0], tgtthue: split3[1], tgtttbso: split3[2] };
+  let solved = resolveSummaryMoneyTuple(moneyRun, 3, logger);
+  if (solved) return { tgtcthue: solved.thtien, tgtthue: solved.tthue, tgtttbso: solved.tong };
 
-  const split2 = splitCompactMoneyRun(moneyRun, 2);
-  if (split2) return { tgtcthue: split2[0], tgtthue: 0, tgtttbso: split2[1] };
+  solved = resolveSummaryMoneyTuple(moneyRun, 2, logger);
+  if (solved) return { tgtcthue: solved.thtien, tgtthue: 0, tgtttbso: solved.tong };
 
   return null;
 }

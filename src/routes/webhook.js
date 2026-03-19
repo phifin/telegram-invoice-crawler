@@ -97,6 +97,22 @@ async function handleUpdate(update) {
     const parsedData = await parseInvoice(buffer, fileName);
     logger.debug("Parse result:", JSON.stringify(parsedData, null, 2));
 
+    if (parsedData._validationErrors && parsedData._validationErrors.length > 0) {
+      const warnings = parsedData._validationErrors.filter(e => e.level === "WARNING");
+      const errors = parsedData._validationErrors.filter(e => e.level === "REQUIRED");
+      
+      if (warnings.length > 0) {
+        logger.warn(`Invoice validation warnings for ${fileName}:`, JSON.stringify(warnings));
+      }
+      if (errors.length > 0) {
+        throw new Error(`Validation failed for ${fileName}. Critical errors: ` + JSON.stringify(errors));
+      }
+    }
+
+    // Strip private internal metadata before uploading
+    delete parsedData._isValid;
+    delete parsedData._validationErrors;
+
     // --- upload ---
     await uploadInvoice(fileName, baseBinary, parsedData);
   } catch (err) {

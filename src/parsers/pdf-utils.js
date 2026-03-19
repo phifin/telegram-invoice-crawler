@@ -114,44 +114,139 @@ function parseMoney(s) {
   return Number.isNaN(n) ? 0 : n;
 }
 
-/**
- * Split a concatenated Vietnamese money string (dot-separated groups)
- * into `count` numeric values, working right-to-left.
- *
- * e.g. splitCompactMoneyRun("83.3336.66790.000", 3) → [83333, 6667, 90000]
- */
-function splitCompactMoneyRun(raw, count) {
-  const s = raw.replace(/[^\d.]/g, "");
-  if (!s) return null;
+function partitionIntoValidNumbers(str, count) {
+  const isVndMoney = (s) => {
+    if (s === "0") return true;
+    if (/^[1-9]\d{0,2}(?:\.\d{3})+$/.test(s)) return true;
+    if (/^[1-9]\d*$/.test(s)) return true;
+    return false;
+  };
 
-  const parts = s.split(".");
-  const result = [];
-  let right = parts.length;
+  const isQuantity = (s) => {
+    if (/^\d+$/.test(s)) return true;
+    if (/^\d+[.,]\d+$/.test(s)) return true;
+    return false;
+  };
 
-  for (let v = 0; v < count; v++) {
-    if (right < 1) return null;
-    const tail = parts[right - 1];
-    if (tail.length !== 3) return null;
-    right--;
-
-    if (right === 0) {
-      result.unshift(Number(tail));
-      continue;
+  function partition(s, partsLeft, position) {
+    if (!s) return [];
+    if (partsLeft === 1) {
+      const valid = position === 0 ? (isQuantity(s) || isVndMoney(s)) : isVndMoney(s);
+      return valid ? [[s]] : [];
     }
-
-    const isLast = v === count - 1;
-    const valueParts = [tail];
-    if (isLast) {
-      for (let j = right - 1; j >= 0; j--) valueParts.unshift(parts[j]);
-      right = 0;
-    } else {
-      valueParts.unshift(parts[right - 1]);
-      right--;
+    const results = [];
+    for (let i = 1; i < s.length; i++) {
+      const prefix = s.slice(0, i);
+      const valid = position === 0 ? (isQuantity(prefix) || isVndMoney(prefix)) : isVndMoney(prefix);
+      if (!valid) continue;
+      
+      const suffixPartitions = partition(s.slice(i), partsLeft - 1, position + 1);
+      for (const sp of suffixPartitions) {
+        results.push([prefix, ...sp]);
+      }
     }
-    result.unshift(Number(valueParts.join("")));
+    return results;
   }
+  
+  return partition(str, count, 0);
+}
 
-  return result.length === count ? result : null;
+function resolveItemMoneyTuple(str, logger) {
+  const candidates = partitionIntoValidNumbers(str, 3);
+  if (!candidates || candidates.length === 0) {
+    if (logger) logger.debug(`[resolveItemMoneyTuple] No valid partitions for '${str}'`);
+    return null;
+  }
+  
+  let best = null;
+  let maxScore = -1;
+  const rejections = [];
+  
+  for (const c of candidates) {
+    try {
+      const qs = c[0].replace(/,/g, ".");
+      const q = Number(qs);
+      const p = parseMoney(c[1]);
+      const a = parseMoney(c[2]);
+      
+      if (p > 1e12 || a > 1e12 || q > 1e6) {
+        rejections.push({ candidate: c, reason: "exceeds bounds" });
+        continue;
+      }
+      
+      const diff = Math.abs(q * p - a);
+      let score = -1;
+      if (diff <= 1) {
+        score = 100 - diff;
+      } else if (diff <= 10) {
+        score = 50 - diff;
+      }
+      
+      if (score > maxScore) {
+        maxScore = score;
+        best = { qty: q, price: p, amtBefore: a, raw: c };
+      } else {
+        rejections.push({ candidate: c, reason: `math invariant score ${score} <= ${maxScore}` });
+      }
+    } catch(e) {
+      rejections.push({ candidate: c, reason: "parse error" });
+    }
+  }
+  
+  if (logger) {
+    logger.debug(`[resolveItemMoneyTuple] Evaluated ${candidates.length} candidates for '${str}'. Best:`, best?.raw, `Rejections: ${rejections.length}`);
+  }
+  
+  return best;
+}
+
+function resolveSummaryMoneyTuple(str, count, logger) {
+  const cleanStr = str.replace(/[^\d.]/g, "");
+  const candidates = partitionIntoValidNumbers(cleanStr, count);
+  if (!candidates || candidates.length === 0) {
+    if (logger) logger.debug(`[resolveSummaryMoneyTuple] No valid partitions for '${cleanStr}' count=${count}`);
+    return null;
+  }
+  
+  let best = null;
+  let maxScore = -1;
+  const rejections = [];
+  
+  for (const c of candidates) {
+    if (count === 3) {
+      const thtien = parseMoney(c[0]);
+      const tthue = parseMoney(c[1]);
+      const tong = parseMoney(c[2]);
+      
+      if (thtien > 1e12 || tthue > 1e12 || tong > 1e12) {
+        rejections.push({ candidate: c, reason: "out of bounds" });
+        continue;
+      }
+      
+      const diff = Math.abs(thtien + tthue - tong);
+      let score = -1;
+      if (diff <= 1) score = 100 - diff;
+      else if (diff <= 10) score = 50 - diff;
+      
+      if (score > maxScore) {
+        maxScore = score;
+        best = { thtien, tthue, tong, raw: c };
+      } else {
+        rejections.push({ candidate: c, reason: "math invariant lower score" });
+      }
+    } else if (count === 2) {
+      const tthue = parseMoney(c[0]);
+      const tong = parseMoney(c[1]);
+      if (tthue > 1e12 || tong > 1e12) continue;
+      const score = 100;
+      if (score > maxScore) { maxScore = score; best = { thtien: 0, tthue, tong, raw: c }; }
+    }
+  }
+  
+  if (logger) {
+    logger.debug(`[resolveSummaryMoneyTuple] Evaluated ${candidates.length} candidates for '${cleanStr}'. Best: ${best?.raw}`);
+  }
+  return best;
 }
 
 module.exports = {
@@ -165,5 +260,7 @@ module.exports = {
   findMultiLineAddressAfterLabelBlock,
   KNOWN_UNITS,
   parseMoney,
-  splitCompactMoneyRun,
+  partitionIntoValidNumbers,
+  resolveItemMoneyTuple,
+  resolveSummaryMoneyTuple,
 };

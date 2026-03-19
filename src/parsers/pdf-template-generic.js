@@ -24,34 +24,10 @@ function parseItemsGeneric(lines) {
 
     // Try VAT_RATES compact pattern
     if (/\d+%/.test(s)) {
-      const vatMatch = s.match(
-        /^(\d+)(.+?)(\d+)([\d.,]+)([\d.,]+)(\d{1,3}%)([\d.,]+)([\d.,]+)$/,
-      );
-      if (vatMatch) {
-        const [, sttRaw, nameUnit, qtyRaw, unitPriceRaw, amtBeforeRaw, taxRateRaw, taxAmtRaw, totalAfterTaxRaw] = vatMatch;
-        sttCounter++;
-        let name = nameUnit.trim();
-        let unit = "";
-        for (const candidate of KNOWN_UNITS) {
-          if (nameUnit.endsWith(candidate)) {
-            unit = candidate;
-            name = nameUnit.slice(0, -candidate.length).trim();
-            break;
-          }
-        }
-        items.push({
-          tchat: 1,
-          stt: toInteger(sttRaw) || sttCounter,
-          ma: "",
-          ten: safeString(name),
-          dvtinh: safeString(unit),
-          soluong: toNumber(qtyRaw),
-          dongia: parseMoney(unitPriceRaw),
-          tien: parseMoney(amtBeforeRaw),
-          tsuat: toInteger(taxRateRaw.replace("%", "")),
-          _taxAmount: parseMoney(taxAmtRaw),
-          _totalAfterTax: parseMoney(totalAfterTaxRaw),
-        });
+      const { parseItemsVatRates } = require("./pdf-template-vat");
+      const vatItems = parseItemsVatRates([line]);
+      if (vatItems.length > 0) {
+        items.push(...vatItems);
         continue;
       }
     }

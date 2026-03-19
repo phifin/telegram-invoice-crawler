@@ -7,7 +7,9 @@ const {
   cleanColonValue,
   KNOWN_UNITS,
   parseMoney,
-  splitCompactMoneyRun,
+  partitionIntoValidNumbers,
+  resolveItemMoneyTuple,
+  resolveSummaryMoneyTuple,
 } = require("./pdf-utils");
 
 // ---------------------------------------------------------------------------
@@ -43,59 +45,49 @@ function parseItemsKct(lines) {
     const leftPart = s.slice(0, kctIdx);
     const rightPart = s.slice(kctIdx + 3);
 
-    // Right part: taxAmount (often 0) + totalAfterTax
+    const trailingNumMatch = leftPart.match(/([\d.,]+)$/);
+    if (!trailingNumMatch) continue;
+
+    const leftNumbersStr = trailingNumMatch[1];
+    const nameUnitPart = leftPart.slice(0, trailingNumMatch.index);
+
+    const solvedLeft = resolveItemMoneyTuple(leftNumbersStr, logger);
+    if (!solvedLeft) continue;
+
     const rightMoney = rightPart.replace(/[^\d.]/g, "");
     let taxAmount = 0;
     let totalAfterTax = 0;
-    const rightMoneyMatch = rightMoney.match(/^(\d+)([\d.]+)$/);
-    if (rightMoneyMatch) {
-      taxAmount = toInteger(rightMoneyMatch[1]);
-      totalAfterTax = parseMoney(rightMoneyMatch[2]);
-    } else {
-      totalAfterTax = parseMoney(rightMoney);
-    }
-
-    // Left part: {stt}{name}{unit}{qty}{unitPrice}{amtBefore}
-    const sttMatch = leftPart.match(/^(\d+)(.*)/);
-    if (!sttMatch) continue;
-
-    const sttRaw = sttMatch[1];
-    const rest = sttMatch[2];
-
-    // Extract trailing money values
-    const moneyMatches = [...rest.matchAll(/(\d[\d.]*\.\d{3}|\d+)/g)];
-    let unitPrice = 0;
-    let amtBefore = 0;
-    let nameUnitPart = rest;
-
-    if (moneyMatches.length >= 2) {
-      const lastTwo = moneyMatches.slice(-2);
-      amtBefore = parseMoney(lastTwo[1][0]);
-      unitPrice = parseMoney(lastTwo[0][0]);
-      nameUnitPart = rest.slice(0, lastTwo[0].index);
-    } else if (moneyMatches.length === 1) {
-      amtBefore = parseMoney(moneyMatches[0][0]);
-      nameUnitPart = rest.slice(0, moneyMatches[0].index);
-    }
-
-    // Extract unit and qty from nameUnitPart
-    let qty = 1;
-    let unit = "";
-    let name = nameUnitPart;
-
-    for (const candidate of KNOWN_UNITS) {
-      const idx = nameUnitPart.indexOf(candidate);
-      if (idx !== -1) {
-        const before = nameUnitPart.slice(0, idx).trim();
-        const afterUnit = nameUnitPart.slice(idx + candidate.length).trim();
-        unit = candidate;
-        const qtyM = afterUnit.match(/^(\d+)/);
-        if (qtyM) {
-          qty = toInteger(qtyM[1]);
-          name = before;
-        } else {
-          name = before;
+    
+    if (rightMoney) {
+      const candidates = partitionIntoValidNumbers(rightMoney, 2);
+      if (candidates && candidates.length) {
+        let bestC = candidates[0];
+        let bestDiff = 999999;
+        for (const c of candidates) {
+          const t = parseMoney(c[0]);
+          const tot = parseMoney(c[1]);
+          const diff = Math.abs(t + solvedLeft.amtBefore - tot);
+          if (diff < bestDiff) { bestDiff = diff; bestC = c; }
         }
+        taxAmount = parseMoney(bestC[0]);
+        totalAfterTax = parseMoney(bestC[1]);
+      } else {
+        totalAfterTax = parseMoney(rightMoney);
+      }
+    }
+
+    const sttMatch = nameUnitPart.match(/^(\d+)(.*)$/);
+    if (!sttMatch) continue;
+    const sttRaw = sttMatch[1];
+    const restStr = sttMatch[2];
+
+    let unit = "";
+    let name = restStr;
+    for (const candidate of KNOWN_UNITS) {
+      const idx = restStr.lastIndexOf(candidate);
+      if (idx !== -1 && idx === restStr.length - candidate.length) {
+        unit = candidate;
+        name = restStr.slice(0, idx).trim();
         break;
       }
     }
@@ -118,9 +110,9 @@ function parseItemsKct(lines) {
       ma: "",
       ten: safeString(name),
       dvtinh: safeString(unit),
-      soluong: qty || 1,
-      dongia: unitPrice || amtBefore,
-      tien: amtBefore,
+      soluong: solvedLeft.qty,
+      dongia: solvedLeft.price,
+      tien: solvedLeft.amtBefore,
       tsuat: "KCT",
       _taxAmount: taxAmount,
       _totalAfterTax: totalAfterTax,
@@ -141,15 +133,14 @@ function parseItemsKct(lines) {
 
 function parseCompactKctSummaryLine(line) {
   const raw = cleanColonValue(line);
-  const hasSlash = raw.startsWith("/");
   const moneyStr = raw.replace(/^\//, "").replace(/[^\d.]/g, "");
   if (!moneyStr) return null;
 
-  const split3 = splitCompactMoneyRun(moneyStr, 3);
-  if (split3) return { tgtcthue: split3[0], tgtthue: split3[1], tgtttbso: split3[2] };
+  let solved = resolveSummaryMoneyTuple(moneyStr, 3, logger);
+  if (solved) return { tgtcthue: solved.thtien, tgtthue: solved.tthue, tgtttbso: solved.tong };
 
-  const split2 = splitCompactMoneyRun(moneyStr, 2);
-  if (split2) return { tgtcthue: split2[0], tgtthue: 0, tgtttbso: split2[1] };
+  solved = resolveSummaryMoneyTuple(moneyStr, 2, logger);
+  if (solved) return { tgtcthue: solved.thtien, tgtthue: 0, tgtttbso: solved.tong };
 
   return { tgtcthue: parseMoney(moneyStr), tgtthue: 0, tgtttbso: parseMoney(moneyStr) };
 }
