@@ -128,6 +128,18 @@ function normalizeInvoiceOutput(raw) {
         const dg = toNumber(item.dongia);
         const ti = toNumber(item.tien);
         const ts = toNumber(item.tsuat);
+        const explicitTax = toNumber(getFirst(item.tthue, item._taxAmount));
+        const explicitAfterTax = toNumber(getFirst(item.tgtttbso, item._totalAfterTax));
+        const safeTien = typeof ti === "number" ? ti : 0;
+        const safeTsuat = typeof ts === "number" ? ts : 0;
+        const derivedTax =
+          typeof explicitTax === "number" && explicitTax > 0
+            ? explicitTax
+            : Math.round((safeTien * safeTsuat) / 100);
+        const derivedAfterTax =
+          typeof explicitAfterTax === "number" && explicitAfterTax > 0
+            ? explicitAfterTax
+            : safeTien + derivedTax;
         return {
           tchat: toInteger(getFirst(item.tchat, 1)),
           stt: toInteger(getFirst(item.stt, index + 1)),
@@ -138,8 +150,10 @@ function normalizeInvoiceOutput(raw) {
           dongia: typeof dg === "number" ? dg : item.dongia,
           tien: typeof ti === "number" ? ti : item.tien,
           tsuat: typeof ts === "number" ? ts : safeString(item.tsuat),
-          _taxAmount: typeof toNumber(item._taxAmount) === "number" ? toNumber(item._taxAmount) : 0,
-          _totalAfterTax: typeof toNumber(item._totalAfterTax) === "number" ? toNumber(item._totalAfterTax) : 0,
+          tthue: derivedTax,
+          tgtttbso: derivedAfterTax,
+          _taxAmount: derivedTax,
+          _totalAfterTax: derivedAfterTax,
           _rawRow: safeString(item._rawRow),
           _normalizedRow: safeString(item._normalizedRow),
           _tailTokens: item._tailTokens || null,

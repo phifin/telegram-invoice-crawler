@@ -86,8 +86,8 @@ function validateAndEnhanceInvoice(invoice, logger) {
       }
     }
 
-    const itemVatAmount = toNumber(item._taxAmount);
-    const itemTotalAfterTax = toNumber(item._totalAfterTax);
+    const itemVatAmount = toNumber(item.tthue || item._taxAmount);
+    const itemTotalAfterTax = toNumber(item.tgtttbso || item._totalAfterTax);
     if (typeof itemVatAmount === "number" && typeof itemTotalAfterTax === "number" && itemTotalAfterTax > 0) {
       const diff = Math.abs(itemTotal + itemVatAmount - itemTotalAfterTax);
       if (diff > 1) {
@@ -127,8 +127,8 @@ function validateAndEnhanceInvoice(invoice, logger) {
       if (matchingItems.length === 0) continue;
 
       const groupBeforeVat = matchingItems.reduce((sum, item) => sum + toNumber(item.tien), 0);
-      const groupVat = matchingItems.reduce((sum, item) => sum + toNumber(item._taxAmount), 0);
-      const groupAfterVat = matchingItems.reduce((sum, item) => sum + toNumber(item._totalAfterTax), 0);
+      const groupVat = matchingItems.reduce((sum, item) => sum + toNumber(item.tthue || item._taxAmount), 0);
+      const groupAfterVat = matchingItems.reduce((sum, item) => sum + toNumber(item.tgtttbso || item._totalAfterTax), 0);
 
       if (Math.abs(groupBeforeVat - toNumber(summaryRow.thtien)) > 1) {
         addError(`thttltsuat[${summaryRow.tsuat}]`, "CHECK", "Item subtotal does not match VAT summary subtotal", `items:${groupBeforeVat} summary:${summaryRow.thtien}`);
@@ -144,8 +144,8 @@ function validateAndEnhanceInvoice(invoice, logger) {
 
   if (invoice._grandTotals) {
     const allBeforeVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item.tien), 0);
-    const allVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item._taxAmount), 0);
-    const allAfterVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item._totalAfterTax), 0);
+    const allVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item.tthue || item._taxAmount), 0);
+    const allAfterVat = invoice.hdhhdvu.reduce((sum, item) => sum + toNumber(item.tgtttbso || item._totalAfterTax), 0);
 
     if (Math.abs(allBeforeVat - toNumber(invoice._grandTotals.amountBeforeVat)) > 1) {
       addError("grandTotals.amountBeforeVat", "CHECK", "Grand subtotal from items does not match grand summary", `items:${allBeforeVat} summary:${invoice._grandTotals.amountBeforeVat}`);
